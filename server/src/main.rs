@@ -1,6 +1,6 @@
 //! Carry Server - Sync server for local-first data synchronization.
 //!
-//! This server provides HTTP endpoints for Flutter clients to sync their
+//! This server provides HTTP and WebSocket endpoints for Flutter clients to sync their
 //! local data with the server using the carry-engine reconciliation logic.
 
 mod auth;
@@ -9,9 +9,11 @@ mod db;
 mod error;
 mod handlers;
 mod routes;
+mod websocket;
 
 use crate::config::Config;
 use crate::db::Pool;
+use crate::websocket::ConnectionManager;
 use axum::Router;
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
@@ -23,6 +25,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 pub struct AppState {
     pub pool: Pool,
     pub config: Arc<Config>,
+    pub conn_manager: Arc<ConnectionManager>,
 }
 
 #[tokio::main]
@@ -50,9 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db::run_migrations(&pool).await?;
 
     // Build application state
+    let conn_manager = ConnectionManager::new_shared();
     let state = AppState {
         pool,
         config: Arc::new(config.clone()),
+        conn_manager,
     };
 
     // Build router
