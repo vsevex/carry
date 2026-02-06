@@ -1,6 +1,26 @@
 [package]
-name = "engine"
+name = "carry-engine"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+description = "Deterministic sync engine for Carry"
+license = "MIT"
+repository = "https://github.com/carry/carry-engine"
+keywords = ["sync", "local-first", "offline", "flutter", "ffi"]
+categories = ["database", "api-bindings"]
+
+[lib]
+name = "carry_engine"
+crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+
+[dev-dependencies]
+proptest = "1.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "benchmarks"
+harness = false
