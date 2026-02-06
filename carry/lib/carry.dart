@@ -65,6 +65,7 @@ export 'src/transport/websocket_transport.dart';
 
 // Debug (for DevTools extension)
 export 'src/debug/debug_service.dart';
+export 'src/debug/logger.dart';
 
 // FFI (advanced usage)
 export 'src/ffi/native_store.dart'
