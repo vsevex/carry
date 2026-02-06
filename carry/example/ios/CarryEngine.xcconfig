@@ -1,0 +1,11 @@
+// Carry Engine Configuration
+// Include this in your Debug.xcconfig and Release.xcconfig
+
+// Path to the Carry engine (3 levels up from ios/ to reach /Volumes/ssd/carry/engine)
+CARRY_ENGINE_PATH = $(SRCROOT)/../../../engine
+
+// Header search path
+HEADER_SEARCH_PATHS = $(inherited) $(CARRY_ENGINE_PATH)/include
+
+// Force load the static library to prevent symbol stripping
+OTHER_LDFLAGS = $(inherited) -force_load $(CARRY_ENGINE_PATH)/target/ios/CarryEngine.xcframework/ios-arm64/libcarry_engine.a
