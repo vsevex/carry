@@ -3,6 +3,7 @@ import 'dart:ffi';
 
 import 'package:ffi/ffi.dart';
 
+import '../debug/logger.dart';
 import 'bindings.dart';
 
 /// Exception thrown when a native operation fails.
@@ -72,11 +73,22 @@ class NativeStore {
 
   /// Call an FFI function that returns a JSON result string.
   /// Handles memory cleanup and error parsing.
-  Map<String, dynamic> _callWithResult(Pointer<Utf8> Function() fn) {
+  Map<String, dynamic> _callWithResult(
+    Pointer<Utf8> Function() fn, {
+    String? operation,
+  }) {
     _checkDisposed();
 
+    final stopwatch = Stopwatch()..start();
     final resultPtr = fn();
+    stopwatch.stop();
+
     if (resultPtr == nullptr) {
+      logFfi(
+        'FFI call returned null',
+        level: CarryLogLevel.error,
+        data: {'operation': operation},
+      );
       throw NativeStoreException('FFI call returned null');
     }
 
@@ -85,8 +97,22 @@ class NativeStore {
       final result = jsonDecode(resultStr) as Map<String, dynamic>;
 
       if (result.containsKey('error')) {
+        logFfi(
+          'FFI call returned error',
+          level: CarryLogLevel.error,
+          data: {'operation': operation, 'error': result['error']},
+        );
         throw NativeStoreException(result['error'] as String);
       }
+
+      logFfi(
+        'FFI call completed',
+        level: CarryLogLevel.verbose,
+        data: {
+          'operation': operation,
+          'durationUs': stopwatch.elapsedMicroseconds,
+        },
+      );
 
       return result;
     } finally {
@@ -98,14 +124,40 @@ class NativeStore {
   ///
   /// Returns the apply result containing the operation ID, record ID, and version.
   Map<String, dynamic> apply(Map<String, dynamic> operation, int timestamp) {
+    final opType = operation['type'] ?? 'unknown';
+    final collection = operation['collection'];
+    final recordId = operation['record_id'];
+
+    logFfi(
+      'Applying operation',
+      data: {
+        'type': opType,
+        'collection': collection,
+        'recordId': recordId,
+        'timestamp': timestamp,
+      },
+    );
+
     final opJson = jsonEncode(operation);
     final opPtr = opJson.toNativeUtf8();
 
     try {
       final result = _callWithResult(
         () => _bindings.carryStoreApply(_ptr, opPtr, timestamp),
+        operation: 'apply',
       );
-      return result['ok'] as Map<String, dynamic>;
+      final applyResult = result['ok'] as Map<String, dynamic>;
+
+      logFfi(
+        'Operation applied',
+        data: {
+          'opId': applyResult['op_id'],
+          'recordId': applyResult['record_id'],
+          'version': applyResult['version'],
+        },
+      );
+
+      return applyResult;
     } finally {
       malloc.free(opPtr);
     }
@@ -115,12 +167,19 @@ class NativeStore {
   ///
   /// Returns the record as a map, or null if not found.
   Map<String, dynamic>? get(String collection, String id) {
+    logFfi(
+      'Getting record',
+      level: CarryLogLevel.verbose,
+      data: {'collection': collection, 'id': id},
+    );
+
     final collectionPtr = collection.toNativeUtf8();
     final idPtr = id.toNativeUtf8();
 
     try {
       final result = _callWithResult(
         () => _bindings.carryStoreGet(_ptr, collectionPtr, idPtr),
+        operation: 'get',
       );
       return result['ok'] as Map<String, dynamic>?;
     } finally {
@@ -199,14 +258,33 @@ class NativeStore {
     List<Map<String, dynamic>> remoteOps,
     MergeStrategy strategy,
   ) {
+    logFfi(
+      'Reconciling operations',
+      data: {
+        'remoteOpsCount': remoteOps.length,
+        'strategy': strategy.name,
+      },
+    );
+
     final remoteOpsJson = jsonEncode(remoteOps);
     final remoteOpsPtr = remoteOpsJson.toNativeUtf8();
 
     try {
       final result = _callWithResult(
         () => _bindings.carryStoreReconcile(_ptr, remoteOpsPtr, strategy.value),
+        operation: 'reconcile',
       );
-      return result['ok'] as Map<String, dynamic>;
+      final reconcileResult = result['ok'] as Map<String, dynamic>;
+
+      logFfi(
+        'Reconciliation completed',
+        data: {
+          'applied': reconcileResult['applied_count'],
+          'conflicts': (reconcileResult['conflicts'] as List?)?.length ?? 0,
+        },
+      );
+
+      return reconcileResult;
     } finally {
       malloc.free(remoteOpsPtr);
     }
