@@ -1,0 +1,16 @@
+SDK Features
+
+Queries - Filtering, sorting, pagination
+Relationships - Foreign keys between collections
+Migrations - Schema versioning and migration support
+Encryption - At-rest encryption for sensitive data
+Selective sync - Sync only specific collections/records
+Real-time - WebSocket push for instant updates
+
+Developer Experience
+
+Comprehensive documentation site
+More example apps (chat, notes, e-commerce)
+Code generation tools (model classes from schema)
+DevTools extension for debugging sync state
+CLI tool for project setup
