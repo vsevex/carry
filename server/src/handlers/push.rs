@@ -32,7 +32,7 @@ pub struct PushResponse {
 }
 
 /// A rejected operation with reason.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RejectedOp {
     pub op_id: String,
