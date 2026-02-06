@@ -1,6 +1,6 @@
 # Carry Todo Example
 
-A local-first todo app demonstrating the Carry SDK.
+A local-first todo app demonstrating the Carry SDK with real-time sync.
 
 ## Features
 
@@ -8,6 +8,10 @@ A local-first todo app demonstrating the Carry SDK.
 - Mark todos as complete
 - Data persists locally (offline-first)
 - Reactive UI updates via `watch()`
+- **Real-time sync via WebSocket** - changes push instantly across devices
+- Connection state indicator in the app bar
+- Automatic reconnection with exponential backoff
+- Falls back to HTTP transport if WebSocket is disabled
 - Hooks for logging operations
 
 ## Building the Native Engine
@@ -64,7 +68,39 @@ This creates `engine/target/android/jniLibs/` with libraries for all ABIs:
 
 The example project's `build.gradle.kts` is already configured to include these.
 
+## Running the Server
+
+The example app syncs with the Carry server. Start it first:
+
+```bash
+# Start PostgreSQL (if not running)
+docker-compose up -d postgres
+
+# Run the server
+cd server
+cargo run --release
+```
+
+The server runs at `http://localhost:3000` by default. WebSocket endpoint is at `ws://localhost:3000/sync/ws`.
+
 ## Running the Example
+
+### Environment Variables
+
+- `SERVER_URL`: HTTP server URL (default: `http://localhost:3000`)
+- `USE_WEBSOCKET`: Use WebSocket transport (default: `true`)
+
+To use HTTP instead of WebSocket:
+
+```bash
+flutter run --dart-define=USE_WEBSOCKET=false
+```
+
+To connect to a different server:
+
+```bash
+flutter run --dart-define=SERVER_URL=http://192.168.1.100:3000
+```
 
 ### macOS
 
@@ -173,6 +209,44 @@ _todos.delete('some-id');
 _todos.watch().listen((todos) {
   setState(() => _todoList = todos);
 });
+```
+
+### WebSocket Real-Time Sync
+
+```dart
+// Create WebSocket transport
+final transport = WebSocketTransport(
+  url: 'ws://localhost:3000/sync/ws',
+  nodeId: 'device_123',
+);
+
+// Create store with WebSocket transport
+final store = SyncStore(
+  schema: schema,
+  nodeId: 'device_123',
+  transport: transport,
+);
+
+await store.init();
+
+// Connect to start receiving real-time updates
+await store.connectWebSocket();
+
+// Track connection state
+transport.connectionState.listen((state) {
+  print('Connection: $state'); // connected, connecting, reconnecting, disconnected
+});
+
+// Changes from other devices arrive automatically via WebSocket
+// and trigger watch() listeners
+```
+
+### Manual Sync (HTTP or WebSocket)
+
+```dart
+// Pull changes and push pending operations
+final result = await store.sync();
+print('Pushed: ${result.pushedCount}, Pulled: ${result.pulledCount}');
 ```
 
 ## Troubleshooting
