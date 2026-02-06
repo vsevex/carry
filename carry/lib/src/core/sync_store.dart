@@ -9,6 +9,7 @@ import 'hooks.dart';
 import 'operation.dart';
 import 'schema.dart';
 import '../debug/debug_service.dart';
+import '../debug/logger.dart';
 import '../ffi/native_store.dart';
 import '../persistence/persistence_adapter.dart';
 import '../transport/transport.dart';
@@ -140,12 +141,27 @@ class SyncStore {
   /// Must be called before using the store.
   Future<void> init() async {
     if (_initialized) {
+      logStore('Store already initialized');
       return;
     }
+
+    logStore(
+      'Initializing store',
+      level: CarryLogLevel.info,
+      data: {
+        'nodeId': nodeId,
+        'schemaVersion': schema.version,
+        'collections': schema.collectionNames.toList(),
+        'hasPersistence': persistence != null,
+        'hasTransport': transport != null,
+        'transportType': transport?.runtimeType.toString(),
+      },
+    );
 
     // Create native store
     final schemaJson = jsonEncode(schema.toJson());
     _native = NativeStore.create(schemaJson, nodeId);
+    logStore('Native store created');
 
     // Load persisted state if available
     if (persistence != null) {
@@ -154,12 +170,27 @@ class SyncStore {
         try {
           final snapshot = jsonDecode(snapshotJson) as Map<String, dynamic>;
           _native!.import(snapshot);
+          logStore(
+            'Loaded persisted state',
+            level: CarryLogLevel.info,
+            data: {'snapshotSize': snapshotJson.length},
+          );
         } catch (e) {
-          // Ignore corrupt snapshots, start fresh
+          logStore(
+            'Failed to load persisted state, starting fresh',
+            level: CarryLogLevel.warning,
+            error: e,
+          );
         }
       }
 
       _lastSyncToken = await persistence!.read(_syncTokenKey);
+      if (_lastSyncToken != null) {
+        logStore(
+          'Loaded sync token',
+          data: {'token': _lastSyncToken},
+        );
+      }
     }
 
     _initialized = true;
@@ -173,21 +204,32 @@ class SyncStore {
     if (kDebugMode) {
       CarryDebugService.instance.register(this);
     }
+
+    logStore('Store initialized successfully', level: CarryLogLevel.info);
   }
 
   void _setupWebSocketTransport(WebSocketTransport wsTransport) {
+    logStore('Setting up WebSocket transport');
+
     // Subscribe to incoming operations
     _incomingOpsSubscription = wsTransport.incomingOperations.listen(
       _handleIncomingOperations,
       onError: (error) {
-        // Log error but don't crash
+        logStore(
+          'WebSocket incoming ops error',
+          level: CarryLogLevel.error,
+          error: error,
+        );
       },
     );
 
     // Optionally track connection state for UI updates
     _connectionStateSubscription = wsTransport.connectionState.listen(
       (state) {
-        // Could expose this via a stream for UI feedback
+        logStore(
+          'WebSocket connection state changed',
+          data: {'state': state.name},
+        );
       },
     );
   }
@@ -201,6 +243,15 @@ class SyncStore {
       return;
     }
 
+    logSync(
+      'Processing incoming operations',
+      level: CarryLogLevel.info,
+      data: {
+        'count': operations.length,
+        'opIds': operations.map((op) => op.opId).toList(),
+      },
+    );
+
     try {
       // Convert to JSON for reconciliation
       final remoteOps = operations.map((op) => op.toJson()).toList();
@@ -209,11 +260,28 @@ class SyncStore {
       final reconcileResult = _native!.reconcile(remoteOps, mergeStrategy);
       final result = ReconcileResult.fromJson(reconcileResult);
 
-      // Call onConflict hook for each conflict
-      if (hooks.onConflict != null) {
-        for (final conflict in result.conflicts) {
-          hooks.onConflict!(conflict);
-        }
+      logSync(
+        'Reconciliation completed',
+        data: {
+          'appliedRemote': result.acceptedRemote.length,
+          'conflicts': result.conflicts.length,
+        },
+      );
+
+      // Log and handle conflicts
+      for (final conflict in result.conflicts) {
+        logConflict(
+          'Conflict resolved',
+          data: {
+            'recordId': conflict.recordId,
+            'collection': conflict.collection,
+            'localOpId': conflict.localOpId,
+            'remoteOpId': conflict.remoteOpId,
+            'winner': conflict.winnerId,
+            'resolution': conflict.resolution,
+          },
+        );
+        hooks.onConflict?.call(conflict);
       }
 
       // Persist state
@@ -221,9 +289,18 @@ class SyncStore {
 
       // Notify collections of changes
       _notifyCollections();
+
+      logSync(
+        'Incoming operations processed',
+        level: CarryLogLevel.info,
+        data: {'applied': result.acceptedRemote.length},
+      );
     } catch (e) {
-      // Failed to process incoming operations
-      // Could add an error callback hook here
+      logSync(
+        'Failed to process incoming operations',
+        level: CarryLogLevel.error,
+        error: e,
+      );
     }
   }
 
@@ -322,6 +399,10 @@ class SyncStore {
     _checkInitialized();
 
     if (transport == null) {
+      logSync(
+        'Sync failed - no transport configured',
+        level: CarryLogLevel.warning,
+      );
       final result = SyncResult.failed('No transport configured');
       if (kDebugMode) {
         CarryDebugService.instance.recordSync(result);
@@ -333,9 +414,19 @@ class SyncStore {
     final syncContext = SyncContext(pendingOps: pendingOpsList);
     final stopwatch = Stopwatch()..start();
 
+    logSync(
+      'Starting sync',
+      level: CarryLogLevel.info,
+      data: {
+        'pendingOps': pendingOpsList.length,
+        'lastSyncToken': _lastSyncToken,
+      },
+    );
+
     // Call beforeSync hook
     if (hooks.beforeSync != null) {
       if (!hooks.beforeSync!(syncContext)) {
+        logSync('Sync cancelled by beforeSync hook', level: CarryLogLevel.info);
         final result = SyncResult.failed('Sync cancelled by beforeSync hook');
         if (kDebugMode) {
           CarryDebugService.instance
@@ -347,18 +438,46 @@ class SyncStore {
 
     try {
       // 1. Pull remote operations
+      logSync('Pulling remote operations');
       final pullResult = await transport!.pull(_lastSyncToken);
       final remoteOps = pullResult.operations.map((op) => op.toJson()).toList();
 
+      logSync(
+        'Pulled operations',
+        data: {
+          'count': pullResult.operations.length,
+          'hasMore': pullResult.hasMore,
+          'newSyncToken': pullResult.syncToken,
+        },
+      );
+
       // 2. Reconcile
+      logSync('Reconciling with local state');
       final reconcileResult = _native!.reconcile(remoteOps, mergeStrategy);
       final result = ReconcileResult.fromJson(reconcileResult);
 
-      // Call onConflict hook for each conflict
-      if (hooks.onConflict != null) {
-        for (final conflict in result.conflicts) {
-          hooks.onConflict!(conflict);
-        }
+      logSync(
+        'Reconciliation completed',
+        data: {
+          'appliedRemote': result.acceptedRemote.length,
+          'conflicts': result.conflicts.length,
+        },
+      );
+
+      // Log and handle conflicts
+      for (final conflict in result.conflicts) {
+        logConflict(
+          'Conflict resolved during sync',
+          data: {
+            'recordId': conflict.recordId,
+            'collection': conflict.collection,
+            'localOpId': conflict.localOpId,
+            'remoteOpId': conflict.remoteOpId,
+            'winner': conflict.winnerId,
+            'resolution': conflict.resolution,
+          },
+        );
+        hooks.onConflict?.call(conflict);
       }
 
       // 3. Push pending operations
@@ -368,11 +487,25 @@ class SyncStore {
 
       int pushedCount = 0;
       if (pendingOpsList.isNotEmpty) {
+        logSync(
+          'Pushing pending operations',
+          data: {'count': pendingOpsList.length},
+        );
         final pushResult = await transport!.push(pendingOpsList);
         if (pushResult.success) {
           // Acknowledge synced operations
           _native!.acknowledge(pushResult.acknowledgedIds);
           pushedCount = pushResult.acknowledgedIds.length;
+          logSync(
+            'Push completed',
+            data: {'acknowledged': pushedCount},
+          );
+        } else {
+          logSync(
+            'Push failed',
+            level: CarryLogLevel.warning,
+            data: {'error': pushResult.error},
+          );
         }
       }
 
@@ -396,6 +529,17 @@ class SyncStore {
         success: true,
       );
 
+      logSync(
+        'Sync completed successfully',
+        level: CarryLogLevel.info,
+        data: {
+          'pushed': pushedCount,
+          'pulled': pullResult.operations.length,
+          'conflicts': result.conflicts.length,
+          'durationMs': stopwatch.elapsedMilliseconds,
+        },
+      );
+
       // Record in debug service
       if (kDebugMode) {
         CarryDebugService.instance
@@ -415,6 +559,14 @@ class SyncStore {
       return syncResult;
     } catch (e) {
       stopwatch.stop();
+
+      logSync(
+        'Sync failed',
+        level: CarryLogLevel.error,
+        data: {'durationMs': stopwatch.elapsedMilliseconds},
+        error: e,
+      );
+
       final failedResult = SyncResult.failed(e.toString());
 
       // Record in debug service
