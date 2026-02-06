@@ -9,3 +9,6 @@
 
 # Docs
 docs/
+
+# Rust build output
+/target/
