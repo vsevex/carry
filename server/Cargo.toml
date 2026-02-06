@@ -9,7 +9,7 @@ description = "Sync server for Carry - local-first data sync"
 carry-engine = { path = "../engine" }
 
 # Web framework
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
@@ -36,6 +36,8 @@ dotenvy = "0.15"
 # Utilities
 uuid = { version = "1.0", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6.0"
+futures = "0.3"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }
