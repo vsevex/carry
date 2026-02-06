@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../core/operation.dart';
+import '../debug/logger.dart';
 import 'transport.dart';
 
 /// Exception thrown when HTTP transport fails.
@@ -95,6 +96,11 @@ class HttpTransport implements Transport {
 
   @override
   Future<PullResult> pull(String? lastSyncToken) async {
+    logHttp(
+      'Pull request',
+      data: {'since': lastSyncToken, 'limit': pullLimit},
+    );
+
     try {
       final queryParams = <String, String>{
         'limit': pullLimit.toString(),
@@ -104,10 +110,26 @@ class HttpTransport implements Transport {
       }
       final uri = _syncUri(queryParams);
 
+      logHttp('GET $uri', level: CarryLogLevel.verbose);
+
       final response =
           await _client.get(uri, headers: _headers).timeout(timeout);
 
+      logHttp(
+        'Pull response',
+        level: CarryLogLevel.verbose,
+        data: {
+          'status': response.statusCode,
+          'bodyLength': response.body.length,
+        },
+      );
+
       if (response.statusCode != 200) {
+        logHttp(
+          'Pull failed',
+          level: CarryLogLevel.error,
+          data: {'status': response.statusCode, 'body': response.body},
+        );
         throw HttpTransportException(
           'Failed to pull: ${response.body}',
           statusCode: response.statusCode,
@@ -120,6 +142,16 @@ class HttpTransport implements Transport {
           .map((op) => Operation.fromJson(op as Map<String, dynamic>))
           .toList();
 
+      logHttp(
+        'Pull completed',
+        level: CarryLogLevel.info,
+        data: {
+          'count': operations.length,
+          'syncToken': json['syncToken'],
+          'hasMore': json['hasMore'],
+        },
+      );
+
       return PullResult(
         operations: operations,
         syncToken: json['syncToken'] as String?,
@@ -128,6 +160,11 @@ class HttpTransport implements Transport {
     } on HttpTransportException {
       rethrow;
     } catch (e) {
+      logHttp(
+        'Pull failed with network error',
+        level: CarryLogLevel.error,
+        error: e,
+      );
       throw HttpTransportException('Network error: $e');
     }
   }
@@ -135,8 +172,17 @@ class HttpTransport implements Transport {
   @override
   Future<PushResult> push(List<Operation> operations) async {
     if (operations.isEmpty) {
+      logHttp('Push skipped - no operations');
       return PushResult.ok([]);
     }
+
+    logHttp(
+      'Push request',
+      data: {
+        'count': operations.length,
+        'opIds': operations.map((op) => op.opId).toList(),
+      },
+    );
 
     try {
       final uri = _syncUri();
@@ -145,11 +191,27 @@ class HttpTransport implements Transport {
         'operations': operations.map((op) => op.toJson()).toList(),
       });
 
+      logHttp('POST $uri', level: CarryLogLevel.verbose);
+
       final response = await _client
           .post(uri, headers: _headers, body: body)
           .timeout(timeout);
 
+      logHttp(
+        'Push response',
+        level: CarryLogLevel.verbose,
+        data: {
+          'status': response.statusCode,
+          'bodyLength': response.body.length,
+        },
+      );
+
       if (response.statusCode != 200 && response.statusCode != 201) {
+        logHttp(
+          'Push failed',
+          level: CarryLogLevel.error,
+          data: {'status': response.statusCode, 'body': response.body},
+        );
         throw HttpTransportException(
           'Failed to push: ${response.body}',
           statusCode: response.statusCode,
@@ -161,11 +223,27 @@ class HttpTransport implements Transport {
       // Server returns 'accepted' for successfully processed operations
       final accepted = (json['accepted'] as List<dynamic>?)?.cast<String>() ??
           operations.map((op) => op.opId).toList();
+      final rejected = json['rejected'] as List<dynamic>? ?? [];
+
+      logHttp(
+        'Push completed',
+        level: CarryLogLevel.info,
+        data: {
+          'accepted': accepted.length,
+          'rejected': rejected.length,
+          'serverClock': json['serverClock'],
+        },
+      );
 
       return PushResult.ok(accepted);
     } on HttpTransportException {
       rethrow;
     } catch (e) {
+      logHttp(
+        'Push failed with network error',
+        level: CarryLogLevel.error,
+        error: e,
+      );
       return PushResult.failed('Network error: $e');
     }
   }
