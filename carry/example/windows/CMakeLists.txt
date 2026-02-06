@@ -93,6 +93,14 @@ install(DIRECTORY "${NATIVE_ASSETS_DIR}"
    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
    COMPONENT Runtime)
 
+# Copy Carry engine DLL if it exists
+set(CARRY_ENGINE_DLL "${CMAKE_CURRENT_SOURCE_DIR}/../../../target/release/carry_engine.dll")
+if(EXISTS "${CARRY_ENGINE_DLL}")
+  install(FILES "${CARRY_ENGINE_DLL}"
+    DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+endif()
+
 # Fully re-copy the assets directory on each build to avoid having stale files
 # from a previous install.
 set(FLUTTER_ASSET_DIR_NAME "flutter_assets")
