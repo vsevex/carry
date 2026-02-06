@@ -187,4 +187,4 @@ Critical invariants:
 
 ## License
 
-TBD
+MIT
