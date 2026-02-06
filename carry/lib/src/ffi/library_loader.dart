@@ -38,7 +38,31 @@ DynamicLibrary loadCarryLibrary() {
   } else if (Platform.isLinux) {
     return DynamicLibrary.open('libcarry_engine.so');
   } else if (Platform.isWindows) {
-    return DynamicLibrary.open('carry_engine.dll');
+    // Try different locations for Windows
+    final locations = [
+      // Same directory as executable (installed/bundled)
+      'carry_engine.dll',
+      // Relative to engine build (from package root)
+      '${Directory.current.path}/../engine/target/release/carry_engine.dll',
+      // Relative to engine build (from example app)
+      '${Directory.current.path}/../../engine/target/release/carry_engine.dll',
+      // Workspace root target directory
+      '${Directory.current.path}/../target/release/carry_engine.dll',
+    ];
+
+    for (final location in locations) {
+      try {
+        return DynamicLibrary.open(location);
+      } catch (_) {
+        continue;
+      }
+    }
+
+    throw UnsupportedError(
+      'Could not load carry_engine.dll. '
+      'Make sure it is built (cargo build --release in engine/) '
+      'and available in one of the expected locations.',
+    );
   }
 
   throw UnsupportedError('Unsupported platform: ${Platform.operatingSystem}');
