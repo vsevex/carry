@@ -61,6 +61,10 @@ export 'src/persistence/persistence_adapter.dart';
 // Transport
 export 'src/transport/http_transport.dart';
 export 'src/transport/transport.dart';
+export 'src/transport/websocket_transport.dart';
+
+// Debug (for DevTools extension)
+export 'src/debug/debug_service.dart';
 
 // FFI (advanced usage)
 export 'src/ffi/native_store.dart'
