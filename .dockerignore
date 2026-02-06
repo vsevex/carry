@@ -1,0 +1,34 @@
+# Build artifacts
+target/
+**/target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+**/.env
+
+# Git
+.git/
+.gitignore
+
+# Flutter
+carry/build/
+carry/.dart_tool/
+carry/.packages
+carry/pubspec.lock
+
+# macOS
+.DS_Store
+
+# Documentation
+docs/
+*.md
+!server/README.md
+
+# Tests
+**/tests/
