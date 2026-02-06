@@ -4,6 +4,7 @@ import 'clock.dart';
 import 'hooks.dart';
 import 'operation.dart';
 import 'record.dart';
+import '../debug/logger.dart';
 import '../ffi/native_store.dart';
 
 /// Provides a typed interface for accessing records in a collection.
@@ -52,6 +53,11 @@ class Collection<T> {
     final id = _getId(item);
     final timestamp = DateTime.now().millisecondsSinceEpoch;
 
+    logCollection(
+      'Inserting item',
+      data: {'collection': _name, 'id': id},
+    );
+
     // Call beforeInsert hook
     if (_hooks.beforeInsert != null) {
       final ctx = OperationContext<T>(
@@ -61,6 +67,10 @@ class Collection<T> {
         timestamp: timestamp,
       );
       if (!_hooks.beforeInsert!(ctx)) {
+        logCollection(
+          'Insert cancelled by hook',
+          data: {'collection': _name, 'id': id},
+        );
         throw OperationCancelledException(
           operation: 'insert',
           collection: _name,
@@ -82,6 +92,12 @@ class Collection<T> {
     );
 
     _store.apply(op.toJson(), timestamp);
+
+    logCollection(
+      'Item inserted',
+      level: CarryLogLevel.info,
+      data: {'collection': _name, 'id': id, 'opId': opId},
+    );
 
     // Call afterInsert hook
     if (_hooks.afterInsert != null) {
@@ -110,8 +126,19 @@ class Collection<T> {
   /// Throws [OperationCancelledException] if a beforeUpdate hook returns false.
   T update(T item) {
     final id = _getId(item);
+
+    logCollection(
+      'Updating item',
+      data: {'collection': _name, 'id': id},
+    );
+
     final existingJson = _store.get(_name, id);
     if (existingJson == null) {
+      logCollection(
+        'Update failed - record not found',
+        level: CarryLogLevel.warning,
+        data: {'collection': _name, 'id': id},
+      );
       throw NativeStoreException('Record not found: $id');
     }
 
@@ -128,6 +155,10 @@ class Collection<T> {
         timestamp: timestamp,
       );
       if (!_hooks.beforeUpdate!(ctx)) {
+        logCollection(
+          'Update cancelled by hook',
+          data: {'collection': _name, 'id': id},
+        );
         throw OperationCancelledException(
           operation: 'update',
           collection: _name,
@@ -151,6 +182,17 @@ class Collection<T> {
     );
 
     _store.apply(op.toJson(), timestamp);
+
+    logCollection(
+      'Item updated',
+      level: CarryLogLevel.info,
+      data: {
+        'collection': _name,
+        'id': id,
+        'opId': opId,
+        'version': baseVersion + 1,
+      },
+    );
 
     // Call afterUpdate hook
     if (_hooks.afterUpdate != null) {
@@ -178,8 +220,18 @@ class Collection<T> {
   /// Throws [NativeStoreException] if the item doesn't exist.
   /// Throws [OperationCancelledException] if a beforeDelete hook returns false.
   void delete(String id) {
+    logCollection(
+      'Deleting item',
+      data: {'collection': _name, 'id': id},
+    );
+
     final existingJson = _store.get(_name, id);
     if (existingJson == null) {
+      logCollection(
+        'Delete failed - record not found',
+        level: CarryLogLevel.warning,
+        data: {'collection': _name, 'id': id},
+      );
       throw NativeStoreException('Record not found: $id');
     }
 
@@ -195,6 +247,10 @@ class Collection<T> {
         timestamp: timestamp,
       );
       if (!_hooks.beforeDelete!(ctx)) {
+        logCollection(
+          'Delete cancelled by hook',
+          data: {'collection': _name, 'id': id},
+        );
         throw OperationCancelledException(
           operation: 'delete',
           collection: _name,
@@ -216,6 +272,12 @@ class Collection<T> {
     );
 
     _store.apply(op.toJson(), timestamp);
+
+    logCollection(
+      'Item deleted',
+      level: CarryLogLevel.info,
+      data: {'collection': _name, 'id': id, 'opId': opId},
+    );
 
     // Call afterDelete hook
     if (_hooks.afterDelete != null) {
