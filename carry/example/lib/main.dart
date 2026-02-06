@@ -16,6 +16,16 @@ const kServerUrl = String.fromEnvironment(
   defaultValue: 'http://localhost:3000',
 );
 
+/// WebSocket URL derived from server URL
+String get kWebSocketUrl {
+  final uri = Uri.parse(kServerUrl);
+  final wsScheme = uri.scheme == 'https' ? 'wss' : 'ws';
+  return '$wsScheme://${uri.host}:${uri.port}/sync/ws';
+}
+
+/// Whether to use WebSocket transport (real-time) or HTTP transport
+const kUseWebSocket = bool.fromEnvironment('USE_WEBSOCKET', defaultValue: true);
+
 void main() => runApp(const CarryTodoApp());
 
 class CarryTodoApp extends StatelessWidget {
@@ -54,14 +64,17 @@ class _TodoListPageState extends State<TodoListPage> {
   Collection<Todo>? _todos;
   List<Todo> _todoList = [];
   StreamSubscription<List<Todo>>? _subscription;
+  StreamSubscription<WebSocketConnectionState>? _connectionSubscription;
   bool _isLoading = true;
   bool _isSyncing = false;
   String? _error;
   String? _syncError;
   DateTime? _lastSyncTime;
   final _uuid = const Uuid();
-  HttpTransport? _transport;
+  Transport? _transport;
   String _nodeId = '';
+  WebSocketConnectionState _connectionState =
+      WebSocketConnectionState.disconnected;
 
   @override
   void initState() {
@@ -89,11 +102,28 @@ class _TodoListPageState extends State<TodoListPage> {
       // Generate or load persistent node ID
       _nodeId = 'device_${_uuid.v4().substring(0, 8)}';
 
-      // Create HTTP transport for server sync
-      _transport = HttpTransport(
-        baseUrl: kServerUrl,
-        nodeId: _nodeId,
-      );
+      // Create transport for server sync
+      if (kUseWebSocket) {
+        final wsTransport = WebSocketTransport(
+          url: kWebSocketUrl,
+          nodeId: _nodeId,
+        );
+        _transport = wsTransport;
+
+        // Track connection state for UI
+        _connectionSubscription = wsTransport.connectionState.listen(
+          (state) {
+            if (mounted) {
+              setState(() => _connectionState = state);
+            }
+          },
+        );
+      } else {
+        _transport = HttpTransport(
+          baseUrl: kServerUrl,
+          nodeId: _nodeId,
+        );
+      }
 
       // Create store with persistence and hooks
       final store = SyncStore(
@@ -112,6 +142,11 @@ class _TodoListPageState extends State<TodoListPage> {
 
       await store.init();
       _store = store;
+
+      // Connect WebSocket if using real-time transport
+      if (kUseWebSocket) {
+        await store.connectWebSocket();
+      }
 
       // Get typed collection
       _todos = _store!.collection<Todo>(
@@ -141,8 +176,11 @@ class _TodoListPageState extends State<TodoListPage> {
   @override
   void dispose() {
     _subscription?.cancel();
+    _connectionSubscription?.cancel();
     _store?.close();
-    _transport?.close();
+    if (_transport is HttpTransport) {
+      (_transport as HttpTransport).close();
+    }
     super.dispose();
   }
 
@@ -213,7 +251,16 @@ class _TodoListPageState extends State<TodoListPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
         appBar: AppBar(
-          title: const Text('Carry Todo'),
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('Carry Todo'),
+              if (!_isLoading && kUseWebSocket) ...[
+                const SizedBox(width: 8),
+                _buildConnectionIndicator(),
+              ],
+            ],
+          ),
           actions: [
             if (!_isLoading && _store != null) ...[
               Padding(
@@ -259,6 +306,61 @@ class _TodoListPageState extends State<TodoListPage> {
                 label: const Text('Add Todo'),
               ),
       );
+
+  Widget _buildConnectionIndicator() {
+    Color color;
+    String tooltip;
+    IconData icon;
+
+    switch (_connectionState) {
+      case WebSocketConnectionState.connected:
+        color = Colors.green;
+        tooltip = 'Connected (real-time)';
+        icon = Icons.wifi;
+        break;
+      case WebSocketConnectionState.connecting:
+        color = Colors.orange;
+        tooltip = 'Connecting...';
+        icon = Icons.wifi_find;
+        break;
+      case WebSocketConnectionState.reconnecting:
+        color = Colors.orange;
+        tooltip = 'Reconnecting...';
+        icon = Icons.wifi_find;
+        break;
+      case WebSocketConnectionState.disconnected:
+        color = Colors.red;
+        tooltip = 'Disconnected';
+        icon = Icons.wifi_off;
+        break;
+    }
+
+    return Tooltip(
+      message: tooltip,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.2),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 4),
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Widget _buildBody() {
     if (_isLoading) {
@@ -358,12 +460,25 @@ class _TodoListPageState extends State<TodoListPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'This example demonstrates the Carry SDK with server sync.',
+              'This example demonstrates the Carry SDK with real-time sync.',
             ),
             const SizedBox(height: 16),
             if (_store != null) ...[
               Text('Node ID: $_nodeId'),
-              const Text('Server: $kServerUrl'),
+              const Text('Transport: ${kUseWebSocket ? 'WebSocket' : 'HTTP'}'),
+              Text(
+                'Server: ${kUseWebSocket ? kWebSocketUrl : kServerUrl}',
+                style: const TextStyle(fontSize: 12),
+              ),
+              if (kUseWebSocket) ...[
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text('Connection: '),
+                    _buildConnectionStatusChip(),
+                  ],
+                ),
+              ],
               const Divider(),
               Text('Pending operations: ${_store!.pendingCount}'),
               Text('Total todos: ${_todoList.length}'),
@@ -381,12 +496,62 @@ class _TodoListPageState extends State<TodoListPage> {
           ],
         ),
         actions: [
+          if (kUseWebSocket)
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                if (_connectionState == WebSocketConnectionState.connected) {
+                  await _store?.disconnectWebSocket();
+                } else {
+                  await _store?.connectWebSocket();
+                }
+              },
+              child: Text(
+                _connectionState == WebSocketConnectionState.connected
+                    ? 'Disconnect'
+                    : 'Connect',
+              ),
+            ),
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('Close'),
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildConnectionStatusChip() {
+    Color color;
+    String label;
+
+    switch (_connectionState) {
+      case WebSocketConnectionState.connected:
+        color = Colors.green;
+        label = 'Connected';
+        break;
+      case WebSocketConnectionState.connecting:
+        color = Colors.orange;
+        label = 'Connecting';
+        break;
+      case WebSocketConnectionState.reconnecting:
+        color = Colors.orange;
+        label = 'Reconnecting';
+        break;
+      case WebSocketConnectionState.disconnected:
+        color = Colors.red;
+        label = 'Disconnected';
+        break;
+    }
+
+    return Chip(
+      avatar: Container(
+        width: 10,
+        height: 10,
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      ),
+      label: Text(label, style: const TextStyle(fontSize: 12)),
+      visualDensity: VisualDensity.compact,
     );
   }
 
