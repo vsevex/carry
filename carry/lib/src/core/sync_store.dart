@@ -1,13 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
 
 import 'clock.dart';
 import 'collection.dart';
 import 'hooks.dart';
 import 'operation.dart';
 import 'schema.dart';
+import '../debug/debug_service.dart';
 import '../ffi/native_store.dart';
 import '../persistence/persistence_adapter.dart';
 import '../transport/transport.dart';
+import '../transport/websocket_transport.dart';
 
 /// Result of a sync operation.
 class SyncResult {
@@ -110,6 +115,8 @@ class SyncStore {
   final Map<String, Collection<dynamic>> _collections = {};
   bool _initialized = false;
   String? _lastSyncToken;
+  StreamSubscription<List<Operation>>? _incomingOpsSubscription;
+  StreamSubscription<WebSocketConnectionState>? _connectionStateSubscription;
 
   static const _snapshotKey = 'carry_snapshot';
   static const _syncTokenKey = 'carry_sync_token';
@@ -119,6 +126,13 @@ class SyncStore {
 
   /// Whether a transport is configured.
   bool get hasTransport => transport != null;
+
+  /// Whether using WebSocket transport.
+  bool get hasWebSocketTransport => transport is WebSocketTransport;
+
+  /// Get the WebSocket transport if configured.
+  WebSocketTransport? get webSocketTransport =>
+      transport is WebSocketTransport ? transport as WebSocketTransport : null;
 
   /// Initialize the store.
   ///
@@ -149,6 +163,86 @@ class SyncStore {
     }
 
     _initialized = true;
+
+    // Set up WebSocket transport if configured
+    if (transport is WebSocketTransport) {
+      _setupWebSocketTransport(transport as WebSocketTransport);
+    }
+
+    // Register debug service in debug mode
+    if (kDebugMode) {
+      CarryDebugService.instance.register(this);
+    }
+  }
+
+  void _setupWebSocketTransport(WebSocketTransport wsTransport) {
+    // Subscribe to incoming operations
+    _incomingOpsSubscription = wsTransport.incomingOperations.listen(
+      _handleIncomingOperations,
+      onError: (error) {
+        // Log error but don't crash
+      },
+    );
+
+    // Optionally track connection state for UI updates
+    _connectionStateSubscription = wsTransport.connectionState.listen(
+      (state) {
+        // Could expose this via a stream for UI feedback
+      },
+    );
+  }
+
+  /// Handle incoming operations pushed from the server via WebSocket.
+  ///
+  /// This reconciles the incoming operations with local state and notifies
+  /// all collection listeners of changes.
+  Future<void> _handleIncomingOperations(List<Operation> operations) async {
+    if (operations.isEmpty || _native == null) {
+      return;
+    }
+
+    try {
+      // Convert to JSON for reconciliation
+      final remoteOps = operations.map((op) => op.toJson()).toList();
+
+      // Reconcile with local state
+      final reconcileResult = _native!.reconcile(remoteOps, mergeStrategy);
+      final result = ReconcileResult.fromJson(reconcileResult);
+
+      // Call onConflict hook for each conflict
+      if (hooks.onConflict != null) {
+        for (final conflict in result.conflicts) {
+          hooks.onConflict!(conflict);
+        }
+      }
+
+      // Persist state
+      await _persistState();
+
+      // Notify collections of changes
+      _notifyCollections();
+    } catch (e) {
+      // Failed to process incoming operations
+      // Could add an error callback hook here
+    }
+  }
+
+  /// Connect the WebSocket transport.
+  ///
+  /// This is only needed if using [WebSocketTransport]. Call this after [init]
+  /// to establish the WebSocket connection and start receiving real-time updates.
+  Future<void> connectWebSocket() async {
+    _checkInitialized();
+    if (transport is WebSocketTransport) {
+      await (transport as WebSocketTransport).connect();
+    }
+  }
+
+  /// Disconnect the WebSocket transport.
+  Future<void> disconnectWebSocket() async {
+    if (transport is WebSocketTransport) {
+      await (transport as WebSocketTransport).disconnect();
+    }
   }
 
   /// Get or create a typed collection.
@@ -193,13 +287,14 @@ class SyncStore {
   List<Operation> get pendingOps {
     _checkInitialized();
     // FFI returns PendingOp which has { operation: Operation, appliedAt: int }
-    return _native!.pendingOps
-        .map(
-          (pendingOp) => Operation.fromJson(
-            pendingOp['operation'] as Map<String, dynamic>,
-          ),
-        )
-        .toList();
+    return _native!.pendingOps.map((pendingOp) {
+      final operation = pendingOp['operation'];
+      // Handle both Map and JSON string from FFI
+      final opMap = operation is String
+          ? jsonDecode(operation) as Map<String, dynamic>
+          : operation as Map<String, dynamic>;
+      return Operation.fromJson(opMap);
+    }).toList();
   }
 
   /// Export the current store state as a snapshot.
@@ -227,16 +322,26 @@ class SyncStore {
     _checkInitialized();
 
     if (transport == null) {
-      return SyncResult.failed('No transport configured');
+      final result = SyncResult.failed('No transport configured');
+      if (kDebugMode) {
+        CarryDebugService.instance.recordSync(result);
+      }
+      return result;
     }
 
     final pendingOpsList = pendingOps;
     final syncContext = SyncContext(pendingOps: pendingOpsList);
+    final stopwatch = Stopwatch()..start();
 
     // Call beforeSync hook
     if (hooks.beforeSync != null) {
       if (!hooks.beforeSync!(syncContext)) {
-        return SyncResult.failed('Sync cancelled by beforeSync hook');
+        final result = SyncResult.failed('Sync cancelled by beforeSync hook');
+        if (kDebugMode) {
+          CarryDebugService.instance
+              .recordSync(result, durationMs: stopwatch.elapsedMilliseconds);
+        }
+        return result;
       }
     }
 
@@ -283,12 +388,19 @@ class SyncStore {
       // Notify collections of changes
       _notifyCollections();
 
+      stopwatch.stop();
       final syncResult = SyncResult(
         pushedCount: pushedCount,
         pulledCount: pullResult.operations.length,
         conflicts: result.conflicts,
         success: true,
       );
+
+      // Record in debug service
+      if (kDebugMode) {
+        CarryDebugService.instance
+            .recordSync(syncResult, durationMs: stopwatch.elapsedMilliseconds);
+      }
 
       // Call afterSync hook
       if (hooks.afterSync != null) {
@@ -302,11 +414,22 @@ class SyncStore {
 
       return syncResult;
     } catch (e) {
+      stopwatch.stop();
+      final failedResult = SyncResult.failed(e.toString());
+
+      // Record in debug service
+      if (kDebugMode) {
+        CarryDebugService.instance.recordSync(
+          failedResult,
+          durationMs: stopwatch.elapsedMilliseconds,
+        );
+      }
+
       // Call onSyncError hook
       if (hooks.onSyncError != null) {
         hooks.onSyncError!(e, syncContext);
       }
-      return SyncResult.failed(e.toString());
+      return failedResult;
     }
   }
 
@@ -322,6 +445,17 @@ class SyncStore {
   Future<void> close() async {
     if (!_initialized) {
       return;
+    }
+
+    // Cancel WebSocket subscriptions
+    await _incomingOpsSubscription?.cancel();
+    _incomingOpsSubscription = null;
+    await _connectionStateSubscription?.cancel();
+    _connectionStateSubscription = null;
+
+    // Close WebSocket transport
+    if (transport is WebSocketTransport) {
+      await (transport as WebSocketTransport).close();
     }
 
     // Persist final state

@@ -233,8 +233,7 @@ class ReconcileResult {
         acceptedLocal: (json['acceptedLocal'] as List<dynamic>).cast<String>(),
         rejectedLocal: (json['rejectedLocal'] as List<dynamic>).cast<String>(),
         // Rust returns 'appliedRemote' for accepted remote ops
-        acceptedRemote:
-            (json['appliedRemote'] as List<dynamic>).cast<String>(),
+        acceptedRemote: (json['appliedRemote'] as List<dynamic>).cast<String>(),
         rejectedRemote:
             (json['rejectedRemote'] as List<dynamic>).cast<String>(),
         conflicts: (json['conflicts'] as List<dynamic>)
