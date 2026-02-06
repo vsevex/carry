@@ -1,0 +1,9 @@
+{
+  "name": "Carry DevTools Extension",
+  "short_name": "Carry DevTools",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0175C2",
+  "theme_color": "#0175C2",
+  "description": "DevTools extension for debugging Carry sync state"
+}
