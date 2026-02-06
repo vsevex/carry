@@ -1,7 +1,7 @@
 name: carry
 description: A local-first data cache and sync layer for Flutter apps, powered by a deterministic Rust core.
 version: 0.1.0
-repository: https://github.com/carry/carry
+repository: https://github.com/vsevex/carry/carry
 
 environment:
   sdk: ^3.0.0
@@ -14,8 +14,16 @@ dependencies:
   path: ^1.9.1
   http: ^1.6.0
   path_provider: ^2.1.5
+  web_socket_channel: ^3.0.3
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+
+flutter:
+  plugin:
+    platforms: {}
+
+devtools:
+  extension: extension/devtools
