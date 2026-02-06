@@ -1,0 +1,28 @@
+# Build
+/build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Dart
+.dart_tool/
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Flutter
+/flutter_assets/
+/ios/
+/android/
+
+# Extension
+/extension/devtools/build/
