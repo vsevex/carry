@@ -1,770 +1,441 @@
 import 'dart:async';
-import 'dart:io';
-
-import 'package:flutter/material.dart';
 
 import 'package:carry/carry.dart';
+import 'package:flutter/material.dart';
 
-import 'package:path_provider/path_provider.dart';
-import 'package:uuid/uuid.dart';
+import 'screens/create_post_screen.dart';
+import 'screens/feed_screen.dart';
+import 'screens/notifications_screen.dart';
+import 'screens/post_detail_screen.dart';
+import 'screens/profile_screen.dart';
+import 'screens/search_screen.dart';
+import 'store/buzz_store.dart';
+import 'widgets/sync_indicator.dart';
 
-import 'models/todo.dart';
+void main() => runApp(const BuzzApp());
 
-/// Server URL - use localhost for iOS Simulator, 10.0.2.2 for Android Emulator
-const kServerUrl = String.fromEnvironment(
-  'SERVER_URL',
-  defaultValue: 'http://localhost:3000',
-);
+// ---------------------------------------------------------------------------
+// Root App
+// ---------------------------------------------------------------------------
 
-/// WebSocket URL derived from server URL
-String get kWebSocketUrl {
-  final uri = Uri.parse(kServerUrl);
-  final wsScheme = uri.scheme == 'https' ? 'wss' : 'ws';
-  return '$wsScheme://${uri.host}:${uri.port}/sync/ws';
-}
-
-/// Whether to use WebSocket transport (real-time) or HTTP transport
-const kUseWebSocket = bool.fromEnvironment('USE_WEBSOCKET', defaultValue: true);
-
-void main() => runApp(const CarryTodoApp());
-
-class CarryTodoApp extends StatelessWidget {
-  const CarryTodoApp({super.key});
+class BuzzApp extends StatelessWidget {
+  const BuzzApp({super.key});
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'Carry Todo',
+        title: 'Buzz',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(
-            seedColor: Colors.indigo,
+            seedColor: const Color(0xFF6C63FF),
           ),
           useMaterial3: true,
         ),
         darkTheme: ThemeData(
           colorScheme: ColorScheme.fromSeed(
-            seedColor: Colors.indigo,
+            seedColor: const Color(0xFF6C63FF),
             brightness: Brightness.dark,
           ),
           useMaterial3: true,
         ),
-        home: const TodoListPage(),
+        home: const BuzzHome(),
       );
 }
 
-class TodoListPage extends StatefulWidget {
-  const TodoListPage({super.key});
+// ---------------------------------------------------------------------------
+// Home - Init flow & routing
+// ---------------------------------------------------------------------------
+
+class BuzzHome extends StatefulWidget {
+  const BuzzHome({super.key});
 
   @override
-  State<TodoListPage> createState() => _TodoListPageState();
+  State<BuzzHome> createState() => _BuzzHomeState();
 }
 
-class _TodoListPageState extends State<TodoListPage> {
-  SyncStore? _store;
-  Collection<Todo>? _todos;
-  List<Todo> _todoList = [];
-  StreamSubscription<List<Todo>>? _subscription;
-  StreamSubscription<WebSocketConnectionState>? _connectionSubscription;
-  bool _isLoading = true;
-  bool _isSyncing = false;
+class _BuzzHomeState extends State<BuzzHome> {
+  bool _loading = true;
   String? _error;
-  String? _syncError;
-  DateTime? _lastSyncTime;
-  final _uuid = const Uuid();
-  Transport? _transport;
-  String _nodeId = '';
-  WebSocketConnectionState _connectionState =
-      WebSocketConnectionState.disconnected;
 
   @override
   void initState() {
     super.initState();
-    _initStore();
+    _init();
   }
 
-  Future<void> _initStore() async {
+  Future<void> _init() async {
     try {
-      // Define schema
-      final schema = Schema.v(1).collection('todos', [
-        Field.string('id', required: true),
-        Field.string('title', required: true),
-        Field.bool_('completed'),
-        Field.int_('createdAt'),
-      ]).build();
-
-      // Get app documents directory for persistence
-      final appDir = await getApplicationDocumentsDirectory();
-      final dataDir = Directory('${appDir.path}/carry_todo');
-      if (!await dataDir.exists()) {
-        await dataDir.create(recursive: true);
-      }
-
-      // Generate or load persistent node ID
-      _nodeId = 'device_${_uuid.v4().substring(0, 8)}';
-
-      // Create transport for server sync
-      if (kUseWebSocket) {
-        final wsTransport = WebSocketTransport(
-          url: kWebSocketUrl,
-          nodeId: _nodeId,
-        );
-        _transport = wsTransport;
-
-        // Track connection state for UI
-        _connectionSubscription = wsTransport.connectionState.listen(
-          (state) {
-            if (mounted) {
-              setState(() => _connectionState = state);
-            }
-          },
-        );
-      } else {
-        _transport = HttpTransport(
-          baseUrl: kServerUrl,
-          nodeId: _nodeId,
-        );
-      }
-
-      // Create store with persistence and hooks
-      final store = SyncStore(
-        schema: schema,
-        nodeId: _nodeId,
-        persistence: FilePersistenceAdapter(directory: dataDir),
-        transport: _transport,
-        hooks: StoreHooks(
-          afterInsert: (ctx, record) =>
-              debugPrint('Created todo: ${ctx.recordId}'),
-          afterUpdate: (ctx, record) =>
-              debugPrint('Updated todo: ${ctx.recordId}'),
-          afterDelete: (ctx) => debugPrint('Deleted todo: ${ctx.recordId}'),
-        ),
-      );
-
-      await store.init();
-      _store = store;
-
-      // Connect WebSocket if using real-time transport
-      if (kUseWebSocket) {
-        await store.connectWebSocket();
-      }
-
-      // Get typed collection
-      _todos = _store!.collection<Todo>(
-        'todos',
-        fromJson: Todo.fromJson,
-        toJson: (t) => t.toJson(),
-        getId: (t) => t.id,
-      );
-
-      // Watch for changes
-      _subscription = _todos!.watch().listen(
-            (todos) => setState(
-              () => _todoList = todos
-                ..sort((a, b) => b.createdAt.compareTo(a.createdAt)),
-            ),
-          );
-
-      setState(() => _isLoading = false);
+      await BuzzStore.instance.init();
+      if (mounted) setState(() => _loading = false);
     } catch (e) {
-      setState(() {
-        _error = e.toString();
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _loading = false;
+        });
+      }
     }
   }
 
   @override
-  void dispose() {
-    _subscription?.cancel();
-    _connectionSubscription?.cancel();
-    _store?.close();
-    if (_transport is HttpTransport) {
-      (_transport as HttpTransport).close();
+  Widget build(BuildContext context) {
+    if (_loading) return _buildLoading();
+    if (_error != null) return _buildError();
+    if (BuzzStore.instance.currentUserId == null) {
+      return ProfileSetupScreen(onComplete: () => setState(() {}));
     }
-    super.dispose();
+    return const AppShell();
   }
 
-  Future<void> _sync() async {
-    if (_store == null || _isSyncing) {
-      return;
-    }
-
-    setState(() {
-      _isSyncing = true;
-      _syncError = null;
-    });
-
-    try {
-      await _store!.sync();
-      setState(() => _lastSyncTime = DateTime.now());
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Synced successfully'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
-    } catch (e) {
-      setState(() => _syncError = e.toString());
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Sync failed: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isSyncing = false);
-      }
-    }
-  }
-
-  void _addTodo() => showDialog(
-        context: context,
-        builder: (context) => _AddTodoDialog(
-          onAdd: (title) {
-            final todo = Todo(
-              id: _uuid.v4(),
-              title: title,
-            );
-            _todos!.insert(todo);
-          },
-        ),
-      );
-
-  void _toggleTodo(Todo todo) =>
-      _todos!.update(todo.copyWith(completed: !todo.completed));
-
-  void _deleteTodo(Todo todo) => _todos!.delete(todo.id);
-
-  void _editTodo(Todo todo) => showDialog(
-        context: context,
-        builder: (context) => _EditTodoDialog(
-          todo: todo,
-          onSave: (title) => _todos!.update(todo.copyWith(title: title)),
-        ),
-      );
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(
-          title: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text('Carry Todo'),
-              if (!_isLoading && kUseWebSocket) ...[
-                const SizedBox(width: 8),
-                _buildConnectionIndicator(),
-              ],
-            ],
-          ),
-          actions: [
-            if (!_isLoading && _store != null) ...[
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Center(
-                  child: Text(
-                    '${_todoList.where((t) => !t.completed).length} pending',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ),
-              ),
-              // Sync button
-              IconButton(
-                icon: _isSyncing
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : Badge(
-                        isLabelVisible: _store!.pendingCount > 0,
-                        label: Text('${_store!.pendingCount}'),
-                        child: const Icon(Icons.sync),
-                      ),
-                onPressed: _isSyncing ? null : _sync,
-                tooltip: _store!.pendingCount > 0
-                    ? 'Sync (${_store!.pendingCount} pending)'
-                    : 'Sync with server',
-              ),
-            ],
-            IconButton(
-              icon: const Icon(Icons.info_outline),
-              onPressed: () => _showInfoDialog(),
-            ),
-          ],
-        ),
-        body: _buildBody(),
-        floatingActionButton: _isLoading || _error != null
-            ? null
-            : FloatingActionButton.extended(
-                onPressed: _addTodo,
-                icon: const Icon(Icons.add),
-                label: const Text('Add Todo'),
-              ),
-      );
-
-  Widget _buildConnectionIndicator() {
-    Color color;
-    String tooltip;
-    IconData icon;
-
-    switch (_connectionState) {
-      case WebSocketConnectionState.connected:
-        color = Colors.green;
-        tooltip = 'Connected (real-time)';
-        icon = Icons.wifi;
-        break;
-      case WebSocketConnectionState.connecting:
-        color = Colors.orange;
-        tooltip = 'Connecting...';
-        icon = Icons.wifi_find;
-        break;
-      case WebSocketConnectionState.reconnecting:
-        color = Colors.orange;
-        tooltip = 'Reconnecting...';
-        icon = Icons.wifi_find;
-        break;
-      case WebSocketConnectionState.disconnected:
-        color = Colors.red;
-        tooltip = 'Disconnected';
-        icon = Icons.wifi_off;
-        break;
-    }
-
-    return Tooltip(
-      message: tooltip,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.2),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 14, color: color),
-            const SizedBox(width: 4),
-            Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: color,
-                shape: BoxShape.circle,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBody() {
-    if (_isLoading) {
-      return const Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(height: 16),
-            Text('Initializing store...'),
-          ],
-        ),
-      );
-    }
-
-    if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
+  Widget _buildLoading() => const Scaffold(
+        body: Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.error_outline, size: 64, color: Colors.red),
-              const SizedBox(height: 16),
-              Text(
-                'Failed to initialize',
-                style: Theme.of(context).textTheme.headlineSmall,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _error!,
-                textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 24),
-              const Text(
-                'Make sure libcarry_engine is built and available.',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontStyle: FontStyle.italic),
-              ),
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Starting Buzz...'),
             ],
           ),
         ),
       );
-    }
 
-    if (_todoList.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.check_circle_outline,
-              size: 80,
-              color:
-                  Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No todos yet',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Tap the button below to add one',
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return ListView.builder(
-      padding: const EdgeInsets.only(bottom: 80),
-      itemCount: _todoList.length,
-      itemBuilder: (context, index) {
-        final todo = _todoList[index];
-        return _TodoTile(
-          todo: todo,
-          onToggle: () => _toggleTodo(todo),
-          onEdit: () => _editTodo(todo),
-          onDelete: () => _deleteTodo(todo),
-        );
-      },
-    );
-  }
-
-  void _showInfoDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('About Carry Todo'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'This example demonstrates the Carry SDK with real-time sync.',
-            ),
-            const SizedBox(height: 16),
-            if (_store != null) ...[
-              Text('Node ID: $_nodeId'),
-              const Text('Transport: ${kUseWebSocket ? 'WebSocket' : 'HTTP'}'),
-              Text(
-                'Server: ${kUseWebSocket ? kWebSocketUrl : kServerUrl}',
-                style: const TextStyle(fontSize: 12),
-              ),
-              if (kUseWebSocket) ...[
+  Widget _buildError() => Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.error_outline, size: 64, color: Colors.red),
+                const SizedBox(height: 16),
+                Text('Failed to initialize',
+                    style: Theme.of(context).textTheme.headlineSmall),
                 const SizedBox(height: 8),
-                Row(
-                  children: [
-                    const Text('Connection: '),
-                    _buildConnectionStatusChip(),
-                  ],
+                Text(_error!, textAlign: TextAlign.center),
+                const SizedBox(height: 24),
+                FilledButton.icon(
+                  onPressed: () {
+                    setState(() {
+                      _loading = true;
+                      _error = null;
+                    });
+                    _init();
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry'),
                 ),
               ],
-              const Divider(),
-              Text('Pending operations: ${_store!.pendingCount}'),
-              Text('Total todos: ${_todoList.length}'),
-              Text('Completed: ${_todoList.where((t) => t.completed).length}'),
-              const Divider(),
-              Text(
-                'Last sync: ${_lastSyncTime != null ? _formatTime(_lastSyncTime!) : 'Never'}',
-              ),
-              if (_syncError != null)
-                Text(
-                  'Last error: $_syncError',
-                  style: const TextStyle(color: Colors.red, fontSize: 12),
-                ),
-            ],
-          ],
-        ),
-        actions: [
-          if (kUseWebSocket)
-            TextButton(
-              onPressed: () async {
-                Navigator.pop(context);
-                if (_connectionState == WebSocketConnectionState.connected) {
-                  await _store?.disconnectWebSocket();
-                } else {
-                  await _store?.connectWebSocket();
-                }
-              },
-              child: Text(
-                _connectionState == WebSocketConnectionState.connected
-                    ? 'Disconnect'
-                    : 'Connect',
-              ),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildConnectionStatusChip() {
-    Color color;
-    String label;
-
-    switch (_connectionState) {
-      case WebSocketConnectionState.connected:
-        color = Colors.green;
-        label = 'Connected';
-        break;
-      case WebSocketConnectionState.connecting:
-        color = Colors.orange;
-        label = 'Connecting';
-        break;
-      case WebSocketConnectionState.reconnecting:
-        color = Colors.orange;
-        label = 'Reconnecting';
-        break;
-      case WebSocketConnectionState.disconnected:
-        color = Colors.red;
-        label = 'Disconnected';
-        break;
-    }
-
-    return Chip(
-      avatar: Container(
-        width: 10,
-        height: 10,
-        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-      ),
-      label: Text(label, style: const TextStyle(fontSize: 12)),
-      visualDensity: VisualDensity.compact,
-    );
-  }
-
-  String _formatTime(DateTime time) {
-    final now = DateTime.now();
-    final diff = now.difference(time);
-    if (diff.inSeconds < 60) {
-      return '${diff.inSeconds}s ago';
-    }
-    if (diff.inMinutes < 60) {
-      return '${diff.inMinutes}m ago';
-    }
-    return '${diff.inHours}h ago';
-  }
-}
-
-class _TodoTile extends StatelessWidget {
-  const _TodoTile({
-    required this.todo,
-    required this.onToggle,
-    required this.onEdit,
-    required this.onDelete,
-  });
-
-  final Todo todo;
-  final VoidCallback onToggle;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
-
-  @override
-  Widget build(BuildContext context) => Dismissible(
-        key: Key(todo.id),
-        direction: DismissDirection.endToStart,
-        background: Container(
-          alignment: Alignment.centerRight,
-          padding: const EdgeInsets.only(right: 20),
-          color: Colors.red,
-          child: const Icon(Icons.delete, color: Colors.white),
-        ),
-        onDismissed: (_) => onDelete(),
-        child: ListTile(
-          leading: Checkbox(
-            value: todo.completed,
-            onChanged: (_) => onToggle(),
-          ),
-          title: Text(
-            todo.title,
-            style: TextStyle(
-              decoration: todo.completed ? TextDecoration.lineThrough : null,
-              color: todo.completed
-                  ? Theme.of(context).colorScheme.onSurfaceVariant
-                  : null,
             ),
           ),
-          subtitle: Text(
-            _formatDate(todo.createdAt),
-            style: Theme.of(context).textTheme.bodySmall,
-          ),
-          trailing: IconButton(
-            icon: const Icon(Icons.edit_outlined),
-            onPressed: onEdit,
-          ),
-          onTap: onToggle,
         ),
       );
-
-  String _formatDate(int timestamp) {
-    final date = DateTime.fromMillisecondsSinceEpoch(timestamp);
-    final now = DateTime.now();
-    final diff = now.difference(date);
-
-    if (diff.inDays == 0) {
-      if (diff.inHours == 0) {
-        if (diff.inMinutes == 0) {
-          return 'Just now';
-        }
-        return '${diff.inMinutes}m ago';
-      }
-      return '${diff.inHours}h ago';
-    } else if (diff.inDays == 1) {
-      return 'Yesterday';
-    } else if (diff.inDays < 7) {
-      return '${diff.inDays}d ago';
-    } else {
-      return '${date.month}/${date.day}/${date.year}';
-    }
-  }
 }
 
-class _AddTodoDialog extends StatefulWidget {
-  const _AddTodoDialog({required this.onAdd});
+// ---------------------------------------------------------------------------
+// Profile Setup (first launch)
+// ---------------------------------------------------------------------------
 
-  final void Function(String title) onAdd;
+class ProfileSetupScreen extends StatefulWidget {
+  const ProfileSetupScreen({super.key, required this.onComplete});
+
+  final VoidCallback onComplete;
 
   @override
-  State<_AddTodoDialog> createState() => _AddTodoDialogState();
+  State<ProfileSetupScreen> createState() => _ProfileSetupScreenState();
 }
 
-class _AddTodoDialogState extends State<_AddTodoDialog> {
-  final _controller = TextEditingController();
-  final _focusNode = FocusNode();
+class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
+  final _usernameCtrl = TextEditingController();
+  final _displayNameCtrl = TextEditingController();
+  bool _creating = false;
 
-  @override
-  void initState() {
-    super.initState();
-    Future.microtask(() => _focusNode.requestFocus());
-  }
+  bool get _canCreate =>
+      _usernameCtrl.text.trim().isNotEmpty &&
+      _displayNameCtrl.text.trim().isNotEmpty;
 
   @override
   void dispose() {
-    _controller.dispose();
-    _focusNode.dispose();
+    _usernameCtrl.dispose();
+    _displayNameCtrl.dispose();
     super.dispose();
   }
 
-  void _submit() {
-    final title = _controller.text.trim();
-    if (title.isNotEmpty) {
-      widget.onAdd(title);
-      Navigator.pop(context);
+  Future<void> _create() async {
+    if (!_canCreate) return;
+    setState(() => _creating = true);
+
+    try {
+      await BuzzStore.instance.createProfile(
+        username: _usernameCtrl.text.trim().toLowerCase().replaceAll(' ', '_'),
+        displayName: _displayNameCtrl.text.trim(),
+      );
+      widget.onComplete();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+        setState(() => _creating = false);
+      }
     }
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('New Todo'),
-        content: TextField(
-          controller: _controller,
-          focusNode: _focusNode,
-          decoration: const InputDecoration(
-            hintText: 'What needs to be done?',
-            border: OutlineInputBorder(),
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.chat_bubble_outline,
+                    size: 72, color: colorScheme.primary),
+                const SizedBox(height: 16),
+                Text('Welcome to Buzz',
+                    style: Theme.of(context)
+                        .textTheme
+                        .headlineMedium
+                        ?.copyWith(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                Text(
+                  'Set up your profile to get started',
+                  style: TextStyle(
+                      color: colorScheme.onSurfaceVariant, fontSize: 16),
+                ),
+                const SizedBox(height: 40),
+                TextField(
+                  controller: _displayNameCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Display Name',
+                    hintText: 'John Doe',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.person_outline),
+                  ),
+                  textCapitalization: TextCapitalization.words,
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _usernameCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Username',
+                    hintText: 'johndoe',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.alternate_email),
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 32),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: FilledButton(
+                    onPressed: _canCreate && !_creating ? _create : null,
+                    child: _creating
+                        ? const SizedBox(
+                            height: 20,
+                            width: 20,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Text('Create Profile',
+                            style: TextStyle(fontSize: 16)),
+                  ),
+                ),
+              ],
+            ),
           ),
-          textCapitalization: TextCapitalization.sentences,
-          onSubmitted: (_) => _submit(),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: _submit,
-            child: const Text('Add'),
-          ),
-        ],
-      );
+      ),
+    );
+  }
 }
 
-class _EditTodoDialog extends StatefulWidget {
-  const _EditTodoDialog({required this.todo, required this.onSave});
+// ---------------------------------------------------------------------------
+// App Shell (bottom navigation)
+// ---------------------------------------------------------------------------
 
-  final Todo todo;
-  final void Function(String title) onSave;
+class AppShell extends StatefulWidget {
+  const AppShell({super.key});
 
   @override
-  State<_EditTodoDialog> createState() => _EditTodoDialogState();
+  State<AppShell> createState() => _AppShellState();
 }
 
-class _EditTodoDialogState extends State<_EditTodoDialog> {
-  late final TextEditingController _controller;
-  final _focusNode = FocusNode();
+class _AppShellState extends State<AppShell> {
+  int _currentTab = 0;
+  final _store = BuzzStore.instance;
+  WebSocketConnectionState _connectionState =
+      WebSocketConnectionState.disconnected;
+  StreamSubscription<WebSocketConnectionState>? _connSub;
+  StreamSubscription? _notifSub;
+  int _unreadCount = 0;
 
   @override
   void initState() {
     super.initState();
-    _controller = TextEditingController(text: widget.todo.title);
-    Future.microtask(() {
-      _focusNode.requestFocus();
-      _controller.selection = TextSelection(
-        baseOffset: 0,
-        extentOffset: _controller.text.length,
-      );
+    _connectionState = _store.connectionState;
+    _connSub = _store.connectionStateStream.listen((state) {
+      if (mounted) setState(() => _connectionState = state);
+    });
+    _notifSub = _store.notifications.watch().listen((all) {
+      if (mounted) {
+        setState(() {
+          _unreadCount = all
+              .where((n) => n.userId == _store.currentUserId && !n.read)
+              .length;
+        });
+      }
     });
   }
 
   @override
   void dispose() {
-    _controller.dispose();
-    _focusNode.dispose();
+    _connSub?.cancel();
+    _notifSub?.cancel();
     super.dispose();
   }
 
-  void _submit() {
-    final title = _controller.text.trim();
-    if (title.isNotEmpty && title != widget.todo.title) {
-      widget.onSave(title);
+  void _navigateToProfile(String userId) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => Scaffold(
+        appBar: AppBar(elevation: 0),
+        body: ProfileScreen(
+          userId: userId,
+          onNavigateToPost: _navigateToPost,
+          onNavigateToProfile: _navigateToProfile,
+        ),
+      ),
+    ));
+  }
+
+  void _navigateToPost(String postId) {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => PostDetailScreen(
+        postId: postId,
+        onNavigateToProfile: _navigateToProfile,
+      ),
+    ));
+  }
+
+  void _createPost() async {
+    final result = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const CreatePostScreen()),
+    );
+    if (result == true && mounted) {
+      setState(() => _currentTab = 0); // Go to feed after posting
     }
-    Navigator.pop(context);
   }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Edit Todo'),
-        content: TextField(
-          controller: _controller,
-          focusNode: _focusNode,
-          decoration: const InputDecoration(
-            hintText: 'Todo title',
-            border: OutlineInputBorder(),
-          ),
-          textCapitalization: TextCapitalization.sentences,
-          onSubmitted: (_) => _submit(),
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text(
+          'Buzz',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 24),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+          SyncIndicator(state: _connectionState),
+          const SizedBox(width: 8),
+          IconButton(
+            icon: Badge(
+              isLabelVisible: _store.pendingCount > 0,
+              label: Text('${_store.pendingCount}'),
+              child: const Icon(Icons.sync),
+            ),
+            onPressed: () async {
+              try {
+                await _store.sync();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Synced successfully'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Sync failed: $e'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                }
+              }
+              if (mounted) setState(() {});
+            },
+            tooltip: 'Sync',
           ),
-          FilledButton(
-            onPressed: _submit,
-            child: const Text('Save'),
+          const SizedBox(width: 4),
+        ],
+      ),
+      body: IndexedStack(
+        index: _currentTab,
+        children: [
+          FeedScreen(
+            onNavigateToProfile: _navigateToProfile,
+            onNavigateToPost: _navigateToPost,
+          ),
+          SearchScreen(onNavigateToProfile: _navigateToProfile),
+          NotificationsScreen(
+            onNavigateToPost: _navigateToPost,
+            onNavigateToProfile: _navigateToProfile,
+          ),
+          ProfileScreen(
+            userId: _store.currentUserId!,
+            onNavigateToPost: _navigateToPost,
+            onNavigateToProfile: _navigateToProfile,
           ),
         ],
-      );
+      ),
+      floatingActionButton: _currentTab == 0
+          ? FloatingActionButton(
+              onPressed: _createPost,
+              child: const Icon(Icons.edit),
+            )
+          : null,
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _currentTab,
+        onDestinationSelected: (i) => setState(() => _currentTab = i),
+        destinations: [
+          const NavigationDestination(
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home),
+            label: 'Feed',
+          ),
+          const NavigationDestination(
+            icon: Icon(Icons.search),
+            selectedIcon: Icon(Icons.search),
+            label: 'Discover',
+          ),
+          NavigationDestination(
+            icon: Badge(
+              isLabelVisible: _unreadCount > 0,
+              label: Text('$_unreadCount'),
+              child: const Icon(Icons.notifications_outlined),
+            ),
+            selectedIcon: Badge(
+              isLabelVisible: _unreadCount > 0,
+              label: Text('$_unreadCount'),
+              child: const Icon(Icons.notifications),
+            ),
+            label: 'Notifications',
+          ),
+          const NavigationDestination(
+            icon: Icon(Icons.person_outline),
+            selectedIcon: Icon(Icons.person),
+            label: 'Profile',
+          ),
+        ],
+      ),
+    );
+  }
 }
