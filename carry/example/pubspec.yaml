@@ -1,5 +1,5 @@
-name: carry_example
-description: Example app demonstrating the Carry SDK - a local-first todo app.
+name: buzz
+description: "Buzz - A social media demo app showcasing the Carry SDK's offline-first sync."
 publish_to: "none"
 version: 1.0.0+1
 
@@ -13,6 +13,7 @@ dependencies:
     path: ../
   path_provider: ^2.1.5
   uuid: ^4.5.2
+  timeago: ^3.7.1
 
 dev_dependencies:
   flutter_test:
