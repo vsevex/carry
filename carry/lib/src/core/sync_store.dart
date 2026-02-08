@@ -295,11 +295,12 @@ class SyncStore {
         level: CarryLogLevel.info,
         data: {'applied': result.acceptedRemote.length},
       );
-    } catch (e) {
+    } catch (e, stackTrace) {
       logSync(
         'Failed to process incoming operations',
         level: CarryLogLevel.error,
         error: e,
+        stackTrace: stackTrace,
       );
     }
   }
@@ -557,7 +558,7 @@ class SyncStore {
       }
 
       return syncResult;
-    } catch (e) {
+    } catch (e, stackTrace) {
       stopwatch.stop();
 
       logSync(
@@ -565,6 +566,7 @@ class SyncStore {
         level: CarryLogLevel.error,
         data: {'durationMs': stopwatch.elapsedMilliseconds},
         error: e,
+        stackTrace: stackTrace,
       );
 
       final failedResult = SyncResult.failed(e.toString());

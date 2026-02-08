@@ -1,4 +1,4 @@
-import 'clock.dart';
+import 'clock.dart' show LogicalClock, asJsonMap;
 
 /// Origin of a record or operation.
 enum Origin {
@@ -26,7 +26,7 @@ class Metadata {
       createdAt: json['createdAt'] as int,
       updatedAt: json['updatedAt'] as int,
       origin: Origin.fromJson(json['origin'] as String),
-      clock: LogicalClock.fromJson(json['clock'] as Map<String, dynamic>),
+      clock: LogicalClock.fromJson(asJsonMap(json['clock'])),
     );
   }
 
@@ -66,8 +66,8 @@ class Record {
       id: json['id'] as String,
       collection: json['collection'] as String,
       version: json['version'] as int,
-      payload: json['payload'] as Map<String, dynamic>,
-      metadata: Metadata.fromJson(json['metadata'] as Map<String, dynamic>),
+      payload: asJsonMap(json['payload']),
+      metadata: Metadata.fromJson(asJsonMap(json['metadata'])),
       deleted: json['deleted'] as bool,
     );
   }

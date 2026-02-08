@@ -1,4 +1,4 @@
-import 'clock.dart';
+import 'clock.dart' show LogicalClock, asJsonMap;
 
 /// Base class for all operations.
 sealed class Operation {
@@ -51,9 +51,9 @@ class CreateOp extends Operation {
         opId: json['opId'] as String,
         recordId: json['id'] as String,
         collection: json['collection'] as String,
-        payload: json['payload'] as Map<String, dynamic>,
+        payload: asJsonMap(json['payload']),
         timestamp: json['timestamp'] as int,
-        clock: LogicalClock.fromJson(json['clock'] as Map<String, dynamic>),
+        clock: LogicalClock.fromJson(asJsonMap(json['clock'])),
       );
   @override
   final String opId;
@@ -101,10 +101,10 @@ class UpdateOp extends Operation {
         opId: json['opId'] as String,
         recordId: json['id'] as String,
         collection: json['collection'] as String,
-        payload: json['payload'] as Map<String, dynamic>,
+        payload: asJsonMap(json['payload']),
         baseVersion: json['baseVersion'] as int,
         timestamp: json['timestamp'] as int,
-        clock: LogicalClock.fromJson(json['clock'] as Map<String, dynamic>),
+        clock: LogicalClock.fromJson(asJsonMap(json['clock'])),
       );
 
   @override
@@ -158,7 +158,7 @@ class DeleteOp extends Operation {
         collection: json['collection'] as String,
         baseVersion: json['baseVersion'] as int,
         timestamp: json['timestamp'] as int,
-        clock: LogicalClock.fromJson(json['clock'] as Map<String, dynamic>),
+        clock: LogicalClock.fromJson(asJsonMap(json['clock'])),
       );
 
   @override
@@ -228,18 +228,23 @@ class ReconcileResult {
     required this.conflicts,
   });
 
-  factory ReconcileResult.fromJson(Map<String, dynamic> json) =>
-      ReconcileResult(
-        acceptedLocal: (json['acceptedLocal'] as List<dynamic>).cast<String>(),
-        rejectedLocal: (json['rejectedLocal'] as List<dynamic>).cast<String>(),
-        // Rust returns 'appliedRemote' for accepted remote ops
-        acceptedRemote: (json['appliedRemote'] as List<dynamic>).cast<String>(),
-        rejectedRemote:
-            (json['rejectedRemote'] as List<dynamic>).cast<String>(),
-        conflicts: (json['conflicts'] as List<dynamic>)
-            .map((c) => Conflict.fromJson(c as Map<String, dynamic>))
-            .toList(),
-      );
+  factory ReconcileResult.fromJson(Map<String, dynamic> json) {
+    // Helper to safely extract a list of Strings, handling null or missing keys
+    List<String> stringList(String key) =>
+        (json[key] as List<dynamic>?)?.whereType<String>().toList() ?? const [];
+
+    return ReconcileResult(
+      acceptedLocal: stringList('acceptedLocal'),
+      rejectedLocal: stringList('rejectedLocal'),
+      // Rust returns 'appliedRemote' for accepted remote ops
+      acceptedRemote: stringList('appliedRemote'),
+      rejectedRemote: stringList('rejectedRemote'),
+      conflicts: (json['conflicts'] as List<dynamic>?)
+              ?.map((c) => Conflict.fromJson(asJsonMap(c)))
+              .toList() ??
+          const [],
+    );
+  }
 
   /// Operation IDs that were accepted from local.
   final List<String> acceptedLocal;
@@ -268,15 +273,52 @@ class Conflict {
     required this.winnerId,
   });
 
+  /// Parse a conflict from the Rust engine JSON.
+  ///
+  /// The engine serializes conflicts as:
+  /// ```json
+  /// {
+  ///   "localOp":   { "type": "create", "opId": "...", "id": "...", "collection": "...", ... },
+  ///   "remoteOp":  { "type": "create", "opId": "...", "id": "...", "collection": "...", ... },
+  ///   "resolution": "localWins" | "remoteWins",
+  ///   "winnerOpId": "..."
+  /// }
+  /// ```
   factory Conflict.fromJson(Map<String, dynamic> json) {
-    final resolution = json['resolution'] as Map<String, dynamic>;
+    // Parse the full operation objects sent by the engine
+    final localOpRaw = asJsonMap(json['localOp']);
+    final remoteOpRaw = asJsonMap(json['remoteOp']);
+
+    // Extract record ID and collection from either operation
+    final recordId = (localOpRaw['id'] ?? remoteOpRaw['id'] ?? '') as String;
+    final collection =
+        (localOpRaw['collection'] ?? remoteOpRaw['collection'] ?? '') as String;
+
+    // Extract operation IDs
+    final localOpId = (localOpRaw['opId'] ?? '') as String;
+    final remoteOpId = (remoteOpRaw['opId'] ?? '') as String;
+
+    // Parse resolution - can be a camelCase string like "localWins"
+    final raw = json['resolution'];
+    String resolution;
+    if (raw is Map) {
+      resolution = (raw).keys.first as String;
+    } else if (raw is String) {
+      resolution = raw;
+    } else {
+      resolution = raw?.toString() ?? 'unknown';
+    }
+
+    // Winner operation ID
+    final winnerId = (json['winnerOpId'] ?? '') as String;
+
     return Conflict(
-      recordId: json['recordId'] as String,
-      collection: json['collection'] as String,
-      localOpId: json['localOpId'] as String,
-      remoteOpId: json['remoteOpId'] as String,
-      resolution: resolution.keys.first,
-      winnerId: resolution.values.first as String,
+      recordId: recordId,
+      collection: collection,
+      localOpId: localOpId,
+      remoteOpId: remoteOpId,
+      resolution: resolution,
+      winnerId: winnerId,
     );
   }
 

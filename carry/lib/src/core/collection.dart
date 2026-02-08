@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'clock.dart';
+import 'clock.dart' show LogicalClock, asJsonMap;
 import 'hooks.dart';
 import 'operation.dart';
 import 'record.dart';
@@ -302,9 +302,7 @@ class Collection<T> {
       return null;
     }
     // Merge record id into payload for fromJson (id is stored at record level)
-    final payload = Map<String, dynamic>.from(
-      record['payload'] as Map<String, dynamic>,
-    );
+    final payload = Map<String, dynamic>.from(asJsonMap(record['payload']));
     payload['id'] = record['id'];
     return _fromJson(payload);
   }
@@ -314,9 +312,7 @@ class Collection<T> {
     final records = _store.query(_name);
     return records.map((r) {
       // Merge record id into payload for fromJson (id is stored at record level)
-      final payload = Map<String, dynamic>.from(
-        r['payload'] as Map<String, dynamic>,
-      );
+      final payload = Map<String, dynamic>.from(asJsonMap(r['payload']));
       payload['id'] = r['id'];
       return _fromJson(payload);
     }).toList();
