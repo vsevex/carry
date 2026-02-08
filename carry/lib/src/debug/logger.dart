@@ -75,6 +75,7 @@ class CarryLogEntry {
     this.data,
     this.error,
     this.stackTrace,
+    this.sourceLocation,
   });
 
   /// Log level.
@@ -97,6 +98,9 @@ class CarryLogEntry {
 
   /// Stack trace if available.
   final StackTrace? stackTrace;
+
+  /// Source location where the log was generated (e.g. "sync_store.dart:123").
+  final String? sourceLocation;
 
   /// Format as a readable string.
   String format({bool includeTimestamp = true, bool includeData = true}) {
@@ -122,6 +126,10 @@ class CarryLogEntry {
       buffer.write(' | Error: $error');
     }
 
+    if (sourceLocation != null) {
+      buffer.write(' (at $sourceLocation)');
+    }
+
     return buffer.toString();
   }
 
@@ -134,6 +142,7 @@ class CarryLogEntry {
         if (data != null) 'data': data,
         if (error != null) 'error': error.toString(),
         if (stackTrace != null) 'stackTrace': stackTrace.toString(),
+        if (sourceLocation != null) 'sourceLocation': sourceLocation,
       };
 }
 
@@ -229,6 +238,10 @@ class CarryLogger {
   static void disableLogging() => instance.level = CarryLogLevel.none;
 
   /// Log a message.
+  ///
+  /// For [CarryLogLevel.error] and [CarryLogLevel.warning], the source
+  /// location (file + line) is automatically captured from the call stack
+  /// unless [stackTrace] is explicitly provided.
   void log(
     CarryLogLevel level,
     CarryLogCategory category,
@@ -246,6 +259,13 @@ class CarryLogger {
       return;
     }
 
+    // Auto-capture source location for errors and warnings.
+    final resolvedTrace = stackTrace ??
+        (level.priority >= CarryLogLevel.warning.priority
+            ? StackTrace.current
+            : null);
+    final location = _parseSourceLocation(resolvedTrace);
+
     final entry = CarryLogEntry(
       level: level,
       category: category,
@@ -253,7 +273,8 @@ class CarryLogger {
       timestamp: DateTime.now(),
       data: data,
       error: error,
-      stackTrace: stackTrace,
+      stackTrace: resolvedTrace,
+      sourceLocation: location,
     );
 
     // Add to history
@@ -304,6 +325,45 @@ class CarryLogger {
         CarryLogLevel.error => 1000,
         CarryLogLevel.none => 0,
       };
+
+  /// Parse a [StackTrace] to extract the first meaningful source location,
+  /// skipping frames that belong to the logger itself.
+  static String? _parseSourceLocation(StackTrace? trace) {
+    if (trace == null) {
+      return null;
+    }
+
+    final lines = trace.toString().split('\n');
+    // Pattern: "#N  SomeClass.method (package:foo/bar.dart:42:15)"
+    // or:      "#N  SomeClass.method (file:///path/bar.dart:42:15)"
+    final framePattern = RegExp(r'\((.+?):(\d+):\d+\)');
+
+    for (final line in lines) {
+      // Skip logger-internal frames.
+      if (line.contains('CarryLogger') ||
+          line.contains('logger.dart') ||
+          line.contains('logSync') ||
+          line.contains('logFfi') ||
+          line.contains('logWebSocket') ||
+          line.contains('logHttp') ||
+          line.contains('logStore') ||
+          line.contains('logCollection') ||
+          line.contains('logPersistence') ||
+          line.contains('logConflict')) {
+        continue;
+      }
+
+      final match = framePattern.firstMatch(line);
+      if (match != null) {
+        final path = match.group(1)!;
+        final lineNo = match.group(2);
+        // Extract just the filename from the path.
+        final fileName = path.split('/').last;
+        return '$fileName:$lineNo';
+      }
+    }
+    return null;
+  }
 
   // Convenience methods for each level
 
@@ -411,6 +471,7 @@ void logSync(
   CarryLogLevel level = CarryLogLevel.debug,
   Map<String, dynamic>? data,
   Object? error,
+  StackTrace? stackTrace,
 }) =>
     CarryLogger.instance.log(
       level,
@@ -418,6 +479,7 @@ void logSync(
       message,
       data: data,
       error: error,
+      stackTrace: stackTrace,
     );
 
 /// Log collection operation.
